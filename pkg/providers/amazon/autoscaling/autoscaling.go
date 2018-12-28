@@ -53,7 +53,7 @@ func (group *Group) IsHealthy() (bool, error) {
 		}
 	}
 
-	if group.DesiredCapacity != nil && int(*group.DesiredCapacity) > 0 && ok == int(*group.DesiredCapacity) {
+	if group.DesiredCapacity != nil && ok == int(*group.DesiredCapacity) {
 		return true, nil
 	}
 
