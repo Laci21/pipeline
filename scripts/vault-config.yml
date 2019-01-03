@@ -4,6 +4,7 @@ secrets:
     description: General secrets.
     options:
       version: 2
+
   - type: database
     description: MySQL Database secret engine.
     configuration:
@@ -20,3 +21,25 @@ secrets:
           creation_statements: "GRANT ALL ON *.* TO '{{name}}'@'%' IDENTIFIED BY '{{password}}';"
           default_ttl: "10m"
           max_ttl: "24h"
+
+  # The PKI secrets engine generates X.509 certificates
+  # See https://www.vaultproject.io/docs/secrets/pki/index.html for more information
+  - type: pki
+    description: Vault PKI Backend
+    config:
+      default_lease_ttl: 168h
+      max_lease_ttl: 8760h # The default value of 30 days may be too short, so increase it to 1 year
+    configuration:
+      config:
+      - name: urls
+        issuing_certificates: http://127.0.0.1:8200/v1/pki/ca
+        crl_distribution_points: http://27.0.0.1:8200/v1/pki/crl
+      root/generate:
+      - name: internal
+        common_name: dev.banzaicloud.com
+      roles:
+      - name: pipeline
+        allowed_domains: localhost,dev.banzaicloud.com
+        allow_subdomains: true
+        generate_lease: true
+        ttl: 720h

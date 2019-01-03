@@ -543,7 +543,7 @@ func (m MissmatchError) Error() string {
 
 // IsCASError detects if the underlying Vault error is caused by a CAS failure
 func IsCASError(err error) bool {
-	return strings.HasSuffix(err.Error(), "check-and-set parameter did not match the current version")
+	return strings.Contains(err.Error(), "check-and-set parameter did not match the current version")
 }
 
 func generateValuesIfNeeded(value *CreateSecretRequest) error {
