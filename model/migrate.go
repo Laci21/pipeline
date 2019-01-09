@@ -20,6 +20,8 @@ import (
 
 	"github.com/jinzhu/gorm"
 	"github.com/sirupsen/logrus"
+
+	//"github.com/banzaicloud/pipeline/internal/providers/google"
 )
 
 // Migrate executes the table migrations for the application models.
@@ -52,16 +54,16 @@ func Migrate(db *gorm.DB, logger logrus.FieldLogger) error {
 	}
 
 	// setup FKs
-	err = addForeignKey(db, logger, &ClusterModel{}, &EKSClusterModel{}, "ClusterID")
+	err = AddForeignKey(db, logger, &ClusterModel{}, &EKSClusterModel{}, "ClusterID")
 	if err != nil {
 		return err
 	}
 
-	err = addForeignKey(db, logger, &EKSClusterModel{}, &EKSSubnetModel{}, "ClusterID")
+	err = AddForeignKey(db, logger, &EKSClusterModel{}, &EKSSubnetModel{}, "ClusterID")
 	return err
 }
 
-func addForeignKey(db *gorm.DB, logger logrus.FieldLogger, parentTable, childTable interface{}, foreignKeyField string) error {
+func AddForeignKeyAndReferencedKey(db *gorm.DB, logger logrus.FieldLogger, parentTable, childTable interface{}, foreignKeyField string, referencedField string) error {
 	parentTableScope := db.NewScope(parentTable)
 	childTableScope := db.NewScope(childTable)
 
@@ -72,15 +74,28 @@ func addForeignKey(db *gorm.DB, logger logrus.FieldLogger, parentTable, childTab
 
 	f, ok := childTableScope.FieldByName(foreignKeyField)
 	if !ok {
-		return fmt.Errorf("field %q found", foreignKeyField)
+		return fmt.Errorf("field %q not found", foreignKeyField)
 	}
 	if !f.IsForeignKey {
 		return fmt.Errorf("%q is not a foreign key field", foreignKeyField)
 	}
 
-	parentIdField := parentTableScope.PrimaryKey()
+	parentIdField := ""
+	if referencedField == "" {
+		parentIdField = parentTableScope.PrimaryKey()
+	} else {
+		f, ok := parentTableScope.FieldByName(referencedField)
+		if !ok {
+			return fmt.Errorf("field %q not found", referencedField)
+		}
+		parentIdField = f.DBName
+	}
 	references := fmt.Sprintf("%s(%s)", parentTableScope.TableName(), parentIdField)
 
 	log.Infof("adding foreign key constraint: %s -> %s", f.DBName, references)
 	return db.Model(childTable).AddForeignKey(f.DBName, references, "RESTRICT", "RESTRICT").Error
+}
+
+func AddForeignKey(db *gorm.DB, logger logrus.FieldLogger, parentTable, childTable interface{}, foreignKeyField string) error {
+	return AddForeignKeyAndReferencedKey(db, logger, parentTable, childTable, foreignKeyField, "")
 }
