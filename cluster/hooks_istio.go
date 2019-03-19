@@ -17,14 +17,20 @@ package cluster
 import (
 	"strings"
 
+	"github.com/banzaicloud/istio-operator/pkg/apis/istio/v1beta1"
 	pConfig "github.com/banzaicloud/pipeline/config"
 	"github.com/banzaicloud/pipeline/internal/istio"
 	"github.com/banzaicloud/pipeline/pkg/cluster"
 	pkgHelm "github.com/banzaicloud/pipeline/pkg/helm"
 	"github.com/banzaicloud/pipeline/pkg/k8sclient"
-	"github.com/ghodss/yaml"
 	"github.com/goph/emperror"
 	"github.com/spf13/viper"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // InstallServiceMeshParams describes InstallServiceMesh posthook params
@@ -39,19 +45,35 @@ type InstallServiceMeshParams struct {
 
 // InstallServiceMesh is a posthook for installing Istio on a cluster
 func InstallServiceMesh(cluster CommonCluster, param cluster.PostHookParam) error {
+	// Install Istio-operator with helm
+	err := installDeployment(cluster, istio.Namespace, pkgHelm.BanzaiRepository+"/istio-operator", "istio-operator", []byte{}, viper.GetString(pConfig.IstioOperatorChartVersion), true)
+	if err != nil {
+		return emperror.Wrap(err, "installing istio-operator failed")
+	}
+
+	// Install Istio by creating a CR for the istio-operator
 	var params InstallServiceMeshParams
-	err := castToPostHookParam(&param, &params)
+	err = castToPostHookParam(&param, &params)
 	if err != nil {
 		return emperror.Wrap(err, "failed to cast posthook param")
 	}
 
 	log.Infof("istio params: %#v", params)
 
-	config := istio.Config{
-		Global: istio.Global{
-			Mtls: istio.MTLS{
-				Enabled: params.EnableMtls,
+	istioConfig := v1beta1.Istio{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Istio",
+			APIVersion: "istio.banzaicloud.io/v1beta1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "istio-config",
+			Labels: map[string]string{
+				"controller-tools.k8s.io": "1.0",
 			},
+		},
+		Spec: v1beta1.IstioSpec{
+			MTLS:                    params.EnableMtls,
+			AutoInjectionNamespaces: params.AutoSidecarInjectNamespaces,
 		},
 	}
 
@@ -60,20 +82,8 @@ func InstallServiceMesh(cluster CommonCluster, param cluster.PostHookParam) erro
 		if err != nil {
 			log.Warnf("couldn't set included IP ranges in Envoy config, external requests will be intercepted")
 		} else {
-			config.Global.Proxy = istio.Proxy{
-				IncludeIPRanges: strings.Join(ipRanges.PodIPRanges, ",") + "," + strings.Join(ipRanges.ServiceClusterIPRanges, ","),
-			}
+			istioConfig.Spec.IncludeIPRanges = strings.Join(ipRanges.PodIPRanges, ",") + "," + strings.Join(ipRanges.ServiceClusterIPRanges, ",")
 		}
-	}
-
-	overrideValues, err := yaml.Marshal(config)
-	if err != nil {
-		return emperror.Wrap(err, "failed to marshal yaml values")
-	}
-
-	err = installDeployment(cluster, istio.Namespace, pkgHelm.BanzaiRepository+"/istio", "istio", overrideValues, viper.GetString(pConfig.IstioChartVersion), false)
-	if err != nil {
-		return emperror.Wrap(err, "installing Istio failed")
 	}
 
 	kubeConfig, err := cluster.GetK8sConfig()
@@ -81,16 +91,37 @@ func InstallServiceMesh(cluster CommonCluster, param cluster.PostHookParam) erro
 		return emperror.Wrap(err, "failed to get kubeconfig")
 	}
 
-	client, err := k8sclient.NewClientFromKubeConfig(kubeConfig)
+	config, err := clientcmd.RESTConfigFromKubeConfig(kubeConfig)
 	if err != nil {
 		return emperror.Wrap(err, "failed to create client from kubeconfig")
 	}
 
-	err = istio.LabelNamespaces(log, client, params.AutoSidecarInjectNamespaces)
+	v1beta1.AddToScheme(scheme.Scheme)
+
+	config.ContentConfig.GroupVersion = &schema.GroupVersion{Group: "istio.banzaicloud.io", Version: "v1beta1"}
+	config.APIPath = "/apis"
+	config.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: scheme.Codecs}
+	config.UserAgent = rest.DefaultKubernetesUserAgent()
+
+	restClient, err := rest.RESTClientFor(config)
 	if err != nil {
-		return emperror.Wrap(err, "failed to label namespace")
+		return err
 	}
 
+	err = restClient.Post().
+		Namespace(istio.Namespace).
+		Resource("istios").
+		Body(&istioConfig).
+		Do().
+		Error()
+	if err != nil {
+		return emperror.Wrap(err, "failed to create Istio CR")
+	}
+
+	client, err := k8sclient.NewClientFromKubeConfig(kubeConfig)
+	if err != nil {
+		return emperror.Wrap(err, "failed to create client from kubeconfig")
+	}
 	if cluster.GetMonitoring() {
 		err = istio.AddPrometheusTargets(log, client)
 		if err != nil {

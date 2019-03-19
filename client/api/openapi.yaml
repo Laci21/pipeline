@@ -10180,6 +10180,13 @@ components:
       properties:
         mtls:
           type: boolean
+        autoSidecarInjectNamespaces:
+          example: default
+          items:
+            type: string
+          type: array
+        bypassEgressTraffic:
+          type: boolean
     PolicyRule_params:
       example:
         name: name
